@@ -112,3 +112,75 @@ on.exit({
 remote_driver$navigate(url)
 
 # Wait for table rows
+rows_xpath <- "//table[contains(@class,'awsui_table')]//tbody//tr"
+rows <- wait_for_xpath(remote_driver, rows_xpath, timeout = 20000)
+
+n <- length(rows)
+if (!is.infinite(max_rows)) n <- min(n, max_rows)
+
+cat(sprintf("Found %d rows. Beginning scrape...\n", n))
+
+# Iterate rows by re-querying each time to avoid stale references
+for (i in seq_len(n)) {
+  Sys.sleep(0.3)  # brief settle time
+  rows <- tryCatch(remote_driver$findElements(using = "xpath", value = rows_xpath), error = function(e) list())
+  if (length(rows) < i) break
+
+  # Click the link in first data column (2nd td): an <a> with role='button'
+  link_xpath <- sprintf("(%s)[%d]//td[2]//a", rows_xpath, i)
+  link_el <- tryCatch(remote_driver$findElement(using = "xpath", value = link_xpath), error = function(e) NULL)
+  if (is.null(link_el)) {
+    cat(sprintf("Row %d: link not found, skipping.\n", i))
+    next
+  }
+
+  # Grab event title for filename
+  title_text <- tryCatch(link_el$getElementText()[[1]], error = function(e) sprintf("row_%03d", i))
+  safe_name <- sanitize_filename(title_text)
+  out_file <- file.path(out_dir, paste0(safe_name, ".txt"))
+
+  # Click to open panel
+  try(link_el$click(), silent = TRUE)
+
+  # Small wait for panel to appear
+  Sys.sleep(1.0)
+
+  # Extract panel text
+  panel_text <- tryCatch(extract_panel_text(remote_driver, timeout = 8000), error = function(e) "")
+
+  if (!nzchar(panel_text)) {
+    # Try clicking again if first attempt fails
+    Sys.sleep(0.5)
+    try(link_el$click(), silent = TRUE)
+    Sys.sleep(1.0)
+    panel_text <- tryCatch(extract_panel_text(remote_driver, timeout = 8000), error = function(e) "")
+  }
+
+  if (nzchar(panel_text)) {
+    # Also capture the summary cells from the row for context
+    row_text <- tryCatch({
+      row_xpath <- sprintf("(%s)[%d]", rows_xpath, i)
+      row_el <- remote_driver$findElement(using = "xpath", value = row_xpath)
+      row_el$getElementText()[[1]]
+    }, error = function(e) "")
+
+    full_text <- paste0(
+      "Title: ", title_text, "\n\n",
+      "Row summary:\n",
+      row_text, "\n\n",
+      "Details (panel):\n",
+      panel_text, "\n"
+    )
+
+    writeLines(full_text, con = out_file, useBytes = TRUE)
+    cat(sprintf("Saved: %s\n", out_file))
+  } else {
+    cat(sprintf("Row %d: no panel text captured.\n", i))
+  }
+
+  # Close panel (best effort)
+  close_panel_if_open(remote_driver)
+  Sys.sleep(0.5)
+}
+
+cat("Done.\n")
