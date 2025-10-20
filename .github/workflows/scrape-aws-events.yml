@@ -1,0 +1,77 @@
+# GitHub Actions workflow to run the R Selenium scraper without requiring Java on your machine
+# It runs on GitHub-hosted Ubuntu, starts Selenium in a service container, installs R deps, and runs the R script.
+
+name: Scrape AWS Events to TXT
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "URL of the page that contains the AWSUI table"
+        required: true
+      max_rows:
+        description: "Max rows to scrape (blank = all)"
+        required: false
+      out_dir:
+        description: "Output directory for TXT files"
+        default: "aws_event_txt"
+        required: false
+  schedule:
+    - cron: "0 8 * * *"  # daily at 08:00 UTC
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    services:
+      selenium:
+        image: selenium/standalone-chrome:latest
+        ports:
+          - 4444:4444
+        options: >-
+          --shm-size=2g
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.3.3'
+
+      - name: Install R packages
+        run: |
+          Rscript -e "install.packages(c('RSelenium','stringr'), repos='https://cloud.r-project.org')"
+
+      - name: Wait for Selenium to be ready
+        run: |
+          set -eux
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4444/status | grep -q '"ready": *true'; then
+              echo "Selenium is ready at /status"; break; fi
+            if curl -sf http://localhost:4444/wd/hub/status | grep -q 'ready.*true'; then
+              echo "Selenium is ready at /wd/hub/status"; break; fi
+            echo "Waiting for Selenium... ($i)"; sleep 2
+          done
+
+      - name: Verify scraper script exists
+        run: |
+          test -f scrape_aws_events.R || { echo 'scrape_aws_events.R not found. Add it to the repo root.'; exit 1; }
+
+      - name: Run scraper
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url || secrets.TARGET_URL }}
+          OUT_DIR: ${{ github.event.inputs.out_dir || 'aws_event_txt' }}
+          MAX_ROWS: ${{ github.event.inputs.max_rows }}
+          SELENIUM_HOST: localhost
+          SELENIUM_PORT: 4444
+        run: |
+          Rscript scrape_aws_events.R
+
+      - name: Upload artifacts (TXT files)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-event-txt
+          path: ${{ github.event.inputs.out_dir || 'aws_event_txt' }}
+          if-no-files-found: warn
