@@ -16,8 +16,7 @@ on:
         description: "Output directory for TXT files"
         default: "aws_event_txt"
         required: false
-  schedule:
-    - cron: "0 8 * * *"  # daily at 08:00 UTC
+
 
 jobs:
   scrape:
